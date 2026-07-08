@@ -86,7 +86,6 @@ impl ContentBlockBuilder {
 struct StreamEvent {
     #[serde(rename = "type")]
     event_type: String,
-    // index: Option<u32>,
     content_block: Option<ContentBlockStart>,
     delta: Option<Delta>,
 }
@@ -332,13 +331,9 @@ async fn messages_stream(
 #[tokio::main]
 async fn main() -> Result<()> {
     // 读取输入 args[0] 是程序名，所以真正输入从索引 1 开始
-    let mut args: Vec<String> = env::args().collect();
-    if args.len() > 1 && args[1] == "run" {
-        args.remove(1);
-    }
+    let args: Vec<String> = env::args().collect();
     let inputs = args.into_iter().skip(1).collect::<Vec<_>>();
     let prompt = inputs.join(" ");
-    println!("{:?}", prompt);
 
     // 创建http客户端
     let client = Client::new();
@@ -394,6 +389,9 @@ async fn main() -> Result<()> {
             &tools,
         )
         .await?;
+        for block in &assistant_blocks {
+            println!("{}", serde_json::to_string(block)?);
+        }
 
         // 2. 将模型返回添加到消息列表
         messages.push(Message {
@@ -403,7 +401,7 @@ async fn main() -> Result<()> {
 
         // 提取出工具调用消息
         let tool_uses: Vec<&ContentBlock> = messages
-            .last() // 或 .iter_mut() 等
+            .last()
             .unwrap()
             .content
             .iter()
@@ -420,12 +418,16 @@ async fn main() -> Result<()> {
         for block in tool_uses {
             if let ContentBlock::ToolUse { id, name, input } = block {
                 let (content, is_error) = execute_tool(name, input, &cwd).await?;
-                tool_results.push(ContentBlock::ToolResult {
+                let tool_result = ContentBlock::ToolResult {
                     tool_use_id: id.clone(),
                     content,
                     is_error,
-                });
+                };
+                tool_results.push(tool_result);
             }
+        }
+        for block in &tool_results {
+            println!("{}", serde_json::to_string(block)?);
         }
 
         // 5. 将工具结果作为用户消息追加
@@ -435,6 +437,5 @@ async fn main() -> Result<()> {
         });
     }
 
-    println!("{:#?}", messages);
     Ok(())
 }
