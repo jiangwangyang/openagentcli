@@ -1,4 +1,6 @@
 use anyhow::{anyhow, bail, Result};
+#[cfg(windows)]
+use encoding_rs::GBK;
 use futures::stream::StreamExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -111,11 +113,28 @@ enum Delta {
     InputJsonDelta { partial_json: String },
 }
 
+// 按平台解码子进程输出：Windows 使用 GBK，其它平台使用 UTF-8
+fn decode_output(bytes: &[u8]) -> String {
+    #[cfg(windows)]
+    {
+        let (cow, _encoding, had_errors) = GBK.decode(bytes);
+        if had_errors {
+            String::from_utf8_lossy(bytes).into_owned()
+        } else {
+            cow.into_owned()
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        String::from_utf8_lossy(bytes).into_owned()
+    }
+}
+
 // 工具调用方法
 async fn execute_tool(
     name: &str,
     input: &serde_json::Value,
-    _work_dir: &str,
+    work_dir: &str,
 ) -> Result<(String, bool)> {
     // 1. 检查工具名
     if name != "command" {
@@ -149,7 +168,7 @@ async fn execute_tool(
     // 4. 使用 tokio::process::Command 异步执行
     let output = tokio::process::Command::new(cmd)
         .args(cmd_args)
-        .current_dir(_work_dir)
+        .current_dir(work_dir)
         .output()
         .await;
 
@@ -157,10 +176,10 @@ async fn execute_tool(
     match output {
         Ok(out) => {
             if out.status.success() {
-                let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+                let stdout = decode_output(&out.stdout);
                 Ok((stdout, false))
             } else {
-                let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+                let stderr = decode_output(&out.stderr);
                 let msg = format!(
                     "Command failed with exit code {:?}: {}",
                     out.status.code(),
@@ -176,8 +195,8 @@ async fn execute_tool(
     }
 }
 
-// 发送消息请求并返回流式事件迭代器（异步流）
-async fn messages_stream(
+// 发送请求并返回助手消息
+async fn send_messages(
     client: &Client,
     base_url: &str,
     api_key: &str,
@@ -192,7 +211,7 @@ async fn messages_stream(
         "messages": messages,
         "system": system_prompt,
         "model": model,
-        "max_tokens": 1 << 14,
+        "max_tokens": 4096,
         "stream": true,
     });
     if !tools.is_empty() {
@@ -350,9 +369,14 @@ async fn main() -> Result<()> {
     }];
 
     // 工具定义
+    let command_description = if cfg!(windows) {
+        "Execute commands on your system. PowerShell commands are recommended, such as [\"powershell\", \"Get-Date\"]"
+    } else {
+        "Execute commands on your system"
+    };
     let tools = vec![json!({
         "name": "command",
-        "description": "Execute commands on your system",
+        "description": command_description,
         "input_schema": {
             "type": "object",
             "properties": {
@@ -379,7 +403,7 @@ async fn main() -> Result<()> {
     // 执行 Agent
     loop {
         // 1. 发送请求，获取模型消息
-        let assistant_blocks = messages_stream(
+        let assistant_blocks = send_messages(
             &client,
             &base_url,
             &api_key,
