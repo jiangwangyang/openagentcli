@@ -1,4 +1,4 @@
-use anyhow::{anyhow, bail, Result};
+use anyhow::{Result, anyhow, bail};
 #[cfg(windows)]
 use encoding_rs::GBK;
 use futures::stream::StreamExt;
@@ -137,37 +137,27 @@ async fn execute_tool(
     work_dir: &str,
 ) -> Result<(String, bool)> {
     // 1. 检查工具名
-    if name != "command" {
+    if name != "powershell" && name != "bash" {
         return Ok((format!("Unknown tool: {}", name), true));
     }
 
-    // 2. 解析 args 数组
-    let args = match input.get("args").and_then(|v| v.as_array()) {
-        Some(arr) => {
-            let mut vec = Vec::new();
-            for val in arr {
-                if let Some(s) = val.as_str() {
-                    vec.push(s.to_string());
-                } else {
-                    return Ok((format!("Argument must be a string: {}", val), true));
-                }
-            }
-            vec
-        }
-        None => return Ok(("Missing 'args' array or not an array".to_string(), true)),
+    // 2. 解析 command 参数
+    let command = match input.get("command").and_then(|v| v.as_str()) {
+        Some(v) => v,
+        None => return Ok(("Missing 'command'".to_string(), true)),
     };
 
-    if args.is_empty() {
-        return Ok(("No command provided".to_string(), true));
-    }
-
     // 3. 分离命令和参数
-    let cmd = &args[0];
-    let cmd_args = &args[1..];
+    let program = if cfg!(windows) {
+        "powershell"
+    } else {
+        "bash"
+    };
+    let program_args = vec!["-c", command];
 
     // 4. 使用 tokio::process::Command 异步执行
-    let output = tokio::process::Command::new(cmd)
-        .args(cmd_args)
+    let output = tokio::process::Command::new(program)
+        .args(program_args)
         .current_dir(work_dir)
         .output()
         .await;
@@ -369,26 +359,28 @@ async fn main() -> Result<()> {
     }];
 
     // 工具定义
-    let command_description = if cfg!(windows) {
-        "Execute commands on your system. PowerShell commands are recommended, such as [\"powershell\", \"Get-Date\"]"
+    let tool_name = if cfg!(windows) {
+        "powershell"
     } else {
-        "Execute commands on your system"
+        "bash"
+    };
+    let tool_description = if cfg!(windows) {
+        "Execute a command on Windows system with powershell"
+    } else {
+        "Execute a command with bash"
     };
     let tools = vec![json!({
-        "name": "command",
-        "description": command_description,
+        "name": tool_name,
+        "description": tool_description,
         "input_schema": {
             "type": "object",
             "properties": {
-                "args": {
-                    "type": "array",
-                    "items": {
-                        "type": "string"
-                    },
-                    "description": "Argument list."
+                "command": {
+                    "type": "string",
+                    "description": "command",
                 }
             },
-            "required": ["args"]
+            "required": ["command"]
         }
     })];
 
@@ -412,7 +404,7 @@ async fn main() -> Result<()> {
             &messages,
             &tools,
         )
-        .await?;
+            .await?;
         for block in &assistant_blocks {
             println!("{}", serde_json::to_string(block)?);
         }
