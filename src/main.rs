@@ -1,6 +1,4 @@
 use anyhow::{Result, anyhow, bail};
-#[cfg(windows)]
-use encoding_rs::GBK;
 use futures::stream::StreamExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -113,23 +111,6 @@ enum Delta {
     InputJsonDelta { partial_json: String },
 }
 
-// 按平台解码子进程输出：Windows 使用 GBK，其它平台使用 UTF-8
-fn decode_output(bytes: &[u8]) -> String {
-    #[cfg(windows)]
-    {
-        let (cow, _encoding, had_errors) = GBK.decode(bytes);
-        if had_errors {
-            String::from_utf8_lossy(bytes).into_owned()
-        } else {
-            cow.into_owned()
-        }
-    }
-    #[cfg(not(windows))]
-    {
-        String::from_utf8_lossy(bytes).into_owned()
-    }
-}
-
 // 工具调用方法
 async fn execute_tool(
     name: &str,
@@ -147,29 +128,21 @@ async fn execute_tool(
         None => return Ok(("Missing 'command'".to_string(), true)),
     };
 
-    // 3. 分离命令和参数
-    let program = if cfg!(windows) {
-        "powershell"
-    } else {
-        "bash"
-    };
-    let program_args = vec!["-c", command];
-
-    // 4. 使用 tokio::process::Command 异步执行
-    let output = tokio::process::Command::new(program)
-        .args(program_args)
+    // 3. 使用 tokio::process::Command 异步执行
+    let output = tokio::process::Command::new("bash")
+        .args(vec!["-c", command])
         .current_dir(work_dir)
         .output()
         .await;
 
-    // 5. 处理执行结果
+    // 4. 处理执行结果
     match output {
         Ok(out) => {
             if out.status.success() {
-                let stdout = decode_output(&out.stdout);
+                let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
                 Ok((stdout, false))
             } else {
-                let stderr = decode_output(&out.stderr);
+                let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
                 let msg = format!(
                     "Command failed with exit code {:?}: {}",
                     out.status.code(),
@@ -359,19 +332,9 @@ async fn main() -> Result<()> {
     }];
 
     // 工具定义
-    let tool_name = if cfg!(windows) {
-        "powershell"
-    } else {
-        "bash"
-    };
-    let tool_description = if cfg!(windows) {
-        "Execute a command on Windows system with powershell"
-    } else {
-        "Execute a command with bash"
-    };
     let tools = vec![json!({
-        "name": tool_name,
-        "description": tool_description,
+        "name": "bash",
+        "description": "Execute a command with bash",
         "input_schema": {
             "type": "object",
             "properties": {

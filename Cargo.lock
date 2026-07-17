@@ -629,7 +629,6 @@ name = "openagentcli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "encoding_rs",
  "futures",
  "reqwest",
  "serde",
